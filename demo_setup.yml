@@ -1,0 +1,78 @@
+---
+- hosts: 127.0.0.1
+  tasks:
+  - name: Install Java
+    yum:  name=java-1.8.0-openjdk-devel state=latest
+  - name: Download Maven
+    unarchive: copy=no src=http://apache.go-parts.com/maven/maven-3/3.3.9/binaries/apache-maven-3.3.9-bin.tar.gz dest=/opt owner=vagrant
+  - name: Symlink Maven
+    file: src=/opt/apache-maven-3.3.9 dest=/opt/maven owner=vagrant state=link
+  - name: Set Path
+    copy: dest=/etc/profile.d/maven.sh content="export PATH=$PATH:/opt/maven/bin"
+    
+  - name: Create m2 Directory
+    file: dest=/home/vagrant/.m2 state=directory owner=vagrant
+  - name: Link Maven Settings
+    file: src=/vagrant/settings.xml dest=/home/vagrant/.m2/settings.xml state=link owner=vagrant
+    
+  - name: Install Docker
+    yum:  name=docker state=latest
+  - name: Enable Docker
+    service: name=docker enabled=yes state=started
+    
+  - name: Install Docker Python Client #Required by ansible docker module
+    yum:  name=python-docker-py.noarch state=latest
+    
+  - name: Package HelloWorld War
+    command: /opt/maven/bin/mvn package chdir=/vagrant/helloworld-rs creates=target
+    sudo: True
+    sudo_user: vagrant
+    
+  - name: Check for HelloWorld Docker
+    command: /usr/bin/docker inspect --type=image demo/helloworld:latest
+    register: dockerCheck
+    ignore_errors: True
+  - name: Package HelloWorld Docker
+    command: /usr/bin/docker build -t demo/helloworld:latest . chdir=/vagrant/helloworld-rs
+    when: dockerCheck|failed
+    
+#  - name: Check for HelloWorld Container
+#    command: /usr/bin/docker inspect --type=container helloworld
+#    register: helloworldExists
+#    ignore_errors: True
+#  - name: Start HelloWorld Container
+#    command: /usr/bin/docker run -d --name helloworld demo/helloworld:latest
+  - name: Ensure HelloWorld Running
+    docker: name=helloworld image=demo/helloworld:latest state=started
+    
+  - name: Ensure ApiMan Running
+    docker: 
+      name: apiman
+      image: jboss/apiman-wildfly:latest
+      state: started
+      links:
+      - "helloworld:api"
+      ports:
+      - "8080:8080"      
+      
+  - name: Wait for ApiMan Ready
+    uri:
+      url: http://localhost:8080/apiman/
+      method: GET
+      user: admin
+      password: admin123!
+      follow_redirects: all
+    register: result
+    until: "result.status == 200"
+    retries: 60
+    delay: 5
+  
+  - name: Create Demo Org
+    uri:
+      url: http://localhost:8080/apiman/organizations
+      method: POST
+      body: "{{ lookup('file', 'demo_org.json') }}"
+      body_format: json
+      user: admin
+      password: admin123!
+      follow_redirects: all
